@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 from abc import abstractmethod
-from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast, get_args
 
 from llama_index.agent.openai_legacy.utils import get_function_by_name
@@ -25,6 +24,7 @@ from llama_index.core.memory import BaseMemory, ChatMemoryBuffer
 from llama_index.core.objects.base import ObjectRetriever
 from llama_index.core.settings import Settings
 from llama_index.core.tools import BaseTool, ToolOutput, adapt_to_async_tool
+from llama_index.core.types import Thread
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.openai.utils import OpenAIToolCall
 
@@ -244,7 +244,7 @@ class BaseOpenAIAgent(BaseAgent):
             sources=self.sources,
         )
         # create task to write chat response to history
-        asyncio.create_task(
+        chat_stream_response.awrite_response_to_history_task = asyncio.create_task(
             chat_stream_response.awrite_response_to_history(self.memory)
         )
         # wait until openAI functions stop executing

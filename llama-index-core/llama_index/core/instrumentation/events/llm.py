@@ -1,6 +1,5 @@
 from typing import Any, List, Optional
-
-from llama_index.core.bridge.pydantic import BaseModel
+from llama_index.core.bridge.pydantic import SerializeAsAny, ConfigDict
 from llama_index.core.base.llms.types import (
     ChatMessage,
     ChatResponse,
@@ -18,11 +17,11 @@ class LLMPredictStartEvent(BaseEvent):
         template_args (Optional[dict]): Prompt template arguments.
     """
 
-    template: BasePromptTemplate
+    template: SerializeAsAny[BasePromptTemplate]
     template_args: Optional[dict]
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMPredictStartEvent"
 
@@ -39,7 +38,7 @@ class LLMPredictEndEvent(BaseEvent):
     output: str
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMPredictEndEvent"
 
@@ -54,11 +53,11 @@ class LLMStructuredPredictStartEvent(BaseEvent):
     """
 
     output_cls: Any
-    template: BasePromptTemplate
+    template: SerializeAsAny[BasePromptTemplate]
     template_args: Optional[dict]
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMStructuredPredictStartEvent"
 
@@ -70,12 +69,27 @@ class LLMStructuredPredictEndEvent(BaseEvent):
         output (BaseModel): Predicted output class.
     """
 
-    output: BaseModel
+    output: SerializeAsAny[Any]
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMStructuredPredictEndEvent"
+
+
+class LLMStructuredPredictInProgressEvent(BaseEvent):
+    """LLMStructuredPredictInProgressEvent.
+
+    Args:
+        output (BaseModel): Predicted output class.
+    """
+
+    output: SerializeAsAny[Any]
+
+    @classmethod
+    def class_name(cls) -> str:
+        """Class name."""
+        return "LLMStructuredPredictInProgressEvent"
 
 
 class LLMCompletionStartEvent(BaseEvent):
@@ -87,14 +101,32 @@ class LLMCompletionStartEvent(BaseEvent):
         model_dict (dict): Model dictionary.
     """
 
+    model_config = ConfigDict(protected_namespaces=("pydantic_model_",))
     prompt: str
     additional_kwargs: dict
     model_dict: dict
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMCompletionStartEvent"
+
+
+class LLMCompletionInProgressEvent(BaseEvent):
+    """LLMCompletionInProgressEvent.
+
+    Args:
+        prompt (str): The prompt to be completed.
+        response (CompletionResponse): Completion response.
+    """
+
+    prompt: str
+    response: CompletionResponse
+
+    @classmethod
+    def class_name(cls) -> str:
+        """Class name."""
+        return "LLMCompletionInProgressEvent"
 
 
 class LLMCompletionEndEvent(BaseEvent):
@@ -109,7 +141,7 @@ class LLMCompletionEndEvent(BaseEvent):
     response: CompletionResponse
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMCompletionEndEvent"
 
@@ -123,12 +155,13 @@ class LLMChatStartEvent(BaseEvent):
         model_dict (dict): Model dictionary.
     """
 
+    model_config = ConfigDict(protected_namespaces=("pydantic_model_",))
     messages: List[ChatMessage]
     additional_kwargs: dict
     model_dict: dict
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMChatStartEvent"
 
@@ -138,14 +171,14 @@ class LLMChatInProgressEvent(BaseEvent):
 
     Args:
         messages (List[ChatMessage]): List of chat messages.
-        response (ChatResponse): Chat response currently beiung streamed.
+        response (ChatResponse): Chat response currently being streamed.
     """
 
     messages: List[ChatMessage]
     response: ChatResponse
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMChatInProgressEvent"
 
@@ -155,13 +188,13 @@ class LLMChatEndEvent(BaseEvent):
 
     Args:
         messages (List[ChatMessage]): List of chat messages.
-        response (ChatResponse): Chat response.
+        response (Optional[ChatResponse]): Last chat response.
     """
 
     messages: List[ChatMessage]
-    response: ChatResponse
+    response: Optional[ChatResponse]
 
     @classmethod
-    def class_name(cls):
+    def class_name(cls) -> str:
         """Class name."""
         return "LLMChatEndEvent"

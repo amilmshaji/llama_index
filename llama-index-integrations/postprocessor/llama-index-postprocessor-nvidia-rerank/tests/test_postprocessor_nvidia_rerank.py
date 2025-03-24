@@ -6,6 +6,19 @@ from llama_index.core.schema import NodeWithScore, Document
 from llama_index.core.node_parser import SentenceSplitter
 
 import faker
+import respx
+
+
+@pytest.fixture()
+def known_unknown() -> str:
+    return "mock-model"
+
+
+@pytest.fixture()
+def mock_local_models(respx_mock: respx.MockRouter, known_unknown: str) -> None:
+    respx_mock.get("http://localhost:8000/v1/models").respond(
+        json={"data": [{"id": known_unknown}]}
+    )
 
 
 @pytest.fixture()
@@ -34,13 +47,9 @@ def nodes(documents: List[Document]) -> List[NodeWithScore]:
 @pytest.mark.integration()
 def test_basic(model: str, mode: dict) -> None:
     text = "Testing leads to failure, and failure leads to understanding."
-    result = (
-        NVIDIARerank(model=model)
-        .mode(**mode)
-        .postprocess_nodes(
-            [NodeWithScore(node=Document(text=text))],
-            query_str=text,
-        )
+    result = NVIDIARerank(model=model, **mode).postprocess_nodes(
+        [NodeWithScore(node=Document(text=text))],
+        query_str=text,
     )
     assert result
     assert isinstance(result, list)
@@ -55,13 +64,9 @@ def test_basic(model: str, mode: dict) -> None:
 def test_accuracy(model: str, mode: dict) -> None:
     texts = ["first", "last"]
     query = "last"
-    result = (
-        NVIDIARerank(model=model)
-        .mode(**mode)
-        .postprocess_nodes(
-            [NodeWithScore(node=Document(text=text)) for text in texts],
-            query_str=query,
-        )
+    result = NVIDIARerank(model=model, **mode).postprocess_nodes(
+        [NodeWithScore(node=Document(text=text)) for text in texts],
+        query_str=query,
     )
     assert result
     assert isinstance(result, list)
@@ -74,7 +79,7 @@ def test_accuracy(model: str, mode: dict) -> None:
 
 @pytest.mark.integration()
 def test_direct_empty_docs(query: str, model: str, mode: dict) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     result_docs = ranker.postprocess_nodes(nodes=[], query_str=query)
     assert len(result_docs) == 0
 
@@ -83,11 +88,11 @@ def test_direct_empty_docs(query: str, model: str, mode: dict) -> None:
 def test_direct_top_n_negative(
     query: str, nodes: List[NodeWithScore], model: str, mode: dict
 ) -> None:
-    orig = NVIDIARerank.Config.validate_assignment
-    NVIDIARerank.Config.validate_assignment = False
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    orig = NVIDIARerank.model_config["validate_assignment"]
+    NVIDIARerank.model_config["validate_assignment"] = False
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = -100
-    NVIDIARerank.Config.validate_assignment = orig
+    NVIDIARerank.model_config["validate_assignment"] = orig
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
     assert len(result) == 0
 
@@ -96,7 +101,7 @@ def test_direct_top_n_negative(
 def test_direct_top_n_zero(
     query: str, nodes: List[NodeWithScore], model: str, mode: dict
 ) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = 0
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
     assert len(result) == 0
@@ -106,7 +111,7 @@ def test_direct_top_n_zero(
 def test_direct_top_n_one(
     query: str, nodes: List[NodeWithScore], model: str, mode: dict
 ) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = 1
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
     assert len(result) == 1
@@ -116,7 +121,7 @@ def test_direct_top_n_one(
 def test_direct_top_n_equal_len_docs(
     query: str, nodes: List[NodeWithScore], model: str, mode: dict
 ) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = len(nodes)
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
     assert len(result) == len(nodes)
@@ -126,7 +131,7 @@ def test_direct_top_n_equal_len_docs(
 def test_direct_top_n_greater_len_docs(
     query: str, nodes: List[NodeWithScore], model: str, mode: dict
 ) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = len(nodes) * 2
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
     assert len(result) == len(nodes)
@@ -134,13 +139,13 @@ def test_direct_top_n_greater_len_docs(
 
 @pytest.mark.parametrize("batch_size", [-10, 0])
 def test_invalid_max_batch_size(model: str, mode: dict, batch_size: int) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(api_key="BOGUS", model=model, **mode)
     with pytest.raises(ValueError):
         ranker.max_batch_size = batch_size
 
 
 def test_invalid_top_n(model: str, mode: dict) -> None:
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(api_key="BOGUS", model=model, **mode)
     with pytest.raises(ValueError):
         ranker.top_n = -10
 
@@ -167,7 +172,7 @@ def test_rerank_batching(
 ) -> None:
     assert len(nodes) > batch_size, "test requires more nodes"
 
-    ranker = NVIDIARerank(model=model).mode(**mode)
+    ranker = NVIDIARerank(model=model, **mode)
     ranker.top_n = top_n
     ranker.max_batch_size = batch_size
     result = ranker.postprocess_nodes(nodes=nodes, query_str=query)
@@ -178,3 +183,43 @@ def test_rerank_batching(
     assert all(
         result[i].score >= result[i + 1].score for i in range(len(result) - 1)
     ), "results are not sorted"
+
+
+def test_default_known(mock_local_models, known_unknown: str) -> None:
+    """
+    Test that a model in the model table will be accepted.
+    """
+    # check if default model is getting set
+    with pytest.warns(UserWarning):
+        x = NVIDIARerank(base_url="http://localhost:8000/v1")
+        assert x.model == known_unknown
+
+
+def test_local_model_not_found(mock_local_models) -> None:
+    """
+    Test that a model in the model table will be accepted.
+    """
+    err_msg = f"No locally hosted lora3 was found."
+    with pytest.raises(ValueError) as msg:
+        x = NVIDIARerank(base_url="http://localhost:8000/v1", model="lora3")
+    assert err_msg == str(msg.value)
+
+
+# marking this as xfail as we do not return invalid error anymore
+@pytest.mark.xfail(reason="value error is not raised anymore")
+def test_model_incompatible_client() -> None:
+    model_name = "x"
+    err_msg = (
+        f"Model {model_name} is incompatible with client NVIDIARerank. "
+        f"Please check `NVIDIARerank.available_models`."
+    )
+    with pytest.raises(ValueError) as msg:
+        NVIDIARerank(api_key="BOGUS", model=model_name)
+    assert err_msg == str(msg.value)
+
+
+def test_model_incompatible_client_known_model() -> None:
+    model_name = "google/deplot"
+    with pytest.warns(UserWarning) as warning:
+        model = NVIDIARerank(api_key="BOGUS", model=model_name)
+    assert "Unable to determine validity" in str(warning[0].message)

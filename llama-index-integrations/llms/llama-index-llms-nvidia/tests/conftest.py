@@ -1,8 +1,6 @@
 import pytest
 import os
 
-from llama_index.llms.nvidia import NVIDIA
-from llama_index.llms.nvidia.base import DEFAULT_MODEL
 
 from typing import Generator
 
@@ -13,13 +11,24 @@ from typing import Generator
 @pytest.fixture()
 def masked_env_var() -> Generator[str, None, None]:
     var = "NVIDIA_API_KEY"
+    # Save the current value of the environment variable, if it exists
+    val = os.environ.get(var, None)
+
+    # Remove the environment variable to simulate it being masked during the test
+    if val is not None:
+        del os.environ[var]
+
     try:
-        if val := os.environ.get(var, None):
-            del os.environ[var]
+        # Yield the original value so it can be used in the test
         yield val
     finally:
-        if val:
+        # Restore the original environment variable if it was set
+        if val is not None:
             os.environ[var] = val
+        else:
+            # If the variable was not originally set, ensure it's removed
+            if var in os.environ:
+                del os.environ[var]
 
 
 def pytest_collection_modifyitems(config, items):
@@ -55,11 +64,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def get_mode(config: pytest.Config) -> dict:
     nim_endpoint = config.getoption("--nim-endpoint")
     if nim_endpoint:
-        return {"mode": "nim", "base_url": nim_endpoint}
+        return {"base_url": nim_endpoint}
     return {}
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    from llama_index.llms.nvidia import NVIDIA
+    from llama_index.llms.nvidia.base import DEFAULT_MODEL
+
     mode = get_mode(metafunc.config)
 
     if "chat_model" in metafunc.fixturenames:
@@ -67,7 +79,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         if model := metafunc.config.getoption("--model-id"):
             models = [model]
         elif metafunc.config.getoption("--all-models"):
-            models = [model.id for model in NVIDIA().mode(**mode).available_models]
+            models = [model.id for model in NVIDIA(**mode).available_models]
         metafunc.parametrize("chat_model", models, ids=models)
 
 

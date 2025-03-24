@@ -43,15 +43,16 @@ class SentenceTransformerRerank(BaseNodePostprocessor):
                 "Cannot import sentence-transformers or torch package,",
                 "please `pip install torch sentence-transformers`",
             )
-        device = infer_torch_device() if device is None else device
-        self._model = CrossEncoder(
-            model, max_length=DEFAULT_SENTENCE_TRANSFORMER_MAX_LENGTH, device=device
-        )
+
         super().__init__(
             top_n=top_n,
             model=model,
             device=device,
             keep_retrieval_score=keep_retrieval_score,
+        )
+        device = infer_torch_device() if device is None else device
+        self._model = CrossEncoder(
+            model, max_length=DEFAULT_SENTENCE_TRANSFORMER_MAX_LENGTH, device=device
         )
 
     @classmethod
@@ -63,8 +64,7 @@ class SentenceTransformerRerank(BaseNodePostprocessor):
         nodes: List[NodeWithScore],
         query_bundle: Optional[QueryBundle] = None,
     ) -> List[NodeWithScore]:
-        dispatch_event = dispatcher.get_dispatch_event()
-        dispatch_event(
+        dispatcher.event(
             ReRankStartEvent(
                 query=query_bundle,
                 nodes=nodes,
@@ -110,5 +110,5 @@ class SentenceTransformerRerank(BaseNodePostprocessor):
             ]
             event.on_end(payload={EventPayload.NODES: new_nodes})
 
-        dispatch_event(ReRankEndEvent(nodes=new_nodes))
+        dispatcher.event(ReRankEndEvent(nodes=new_nodes))
         return new_nodes

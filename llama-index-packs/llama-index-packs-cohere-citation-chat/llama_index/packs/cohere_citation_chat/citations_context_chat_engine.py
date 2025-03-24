@@ -1,5 +1,4 @@
 import asyncio
-from threading import Thread
 from typing import List, Optional, Any
 from enum import Enum
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from llama_index.core.chat_engine.types import BaseChatEngine
 from llama_index.core import VectorStoreIndex
 from llama_index.core.settings import Settings
 from llama_index.core.memory import BaseMemory
+from llama_index.core.types import Thread
 
 from .types import (
     Document,
@@ -250,20 +250,11 @@ class VectorStoreIndexWithCitationsChat(VectorStoreIndex):
         if chat_mode not in [ChatModeCitations.COHERE_CITATIONS_CONTEXT]:
             return super().as_chat_engine(chat_mode=chat_mode, llm=llm, **kwargs)
         else:
-            service_context = kwargs.get("service_context", self.service_context)
-
-            if service_context is not None:
-                llm = (
-                    resolve_llm(llm, callback_manager=self._callback_manager)
-                    if llm
-                    else service_context.llm
-                )
-            else:
-                llm = (
-                    resolve_llm(llm, callback_manager=self._callback_manager)
-                    if llm
-                    else Settings.llm
-                )
+            llm = (
+                resolve_llm(llm, callback_manager=self._callback_manager)
+                if llm
+                else Settings.llm
+            )
 
             return CitationsContextChatEngine.from_defaults(
                 retriever=self.as_retriever(**kwargs),

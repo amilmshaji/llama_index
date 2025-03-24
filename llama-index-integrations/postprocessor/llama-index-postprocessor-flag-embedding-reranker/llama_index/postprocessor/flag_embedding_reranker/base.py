@@ -27,6 +27,7 @@ class FlagEmbeddingReranker(BaseNodePostprocessor):
         model: str = "BAAI/bge-reranker-large",
         use_fp16: bool = False,
     ) -> None:
+        super().__init__(top_n=top_n, model=model, use_fp16=use_fp16)
         try:
             from FlagEmbedding import FlagReranker
         except ImportError:
@@ -38,7 +39,6 @@ class FlagEmbeddingReranker(BaseNodePostprocessor):
             model,
             use_fp16=use_fp16,
         )
-        super().__init__(top_n=top_n, model=model, use_fp16=use_fp16)
 
     @classmethod
     def class_name(cls) -> str:
@@ -49,8 +49,7 @@ class FlagEmbeddingReranker(BaseNodePostprocessor):
         nodes: List[NodeWithScore],
         query_bundle: Optional[QueryBundle] = None,
     ) -> List[NodeWithScore]:
-        dispatch_event = dispatcher.get_dispatch_event()
-        dispatch_event(
+        dispatcher.event(
             ReRankStartEvent(
                 query=query_bundle,
                 nodes=nodes,
@@ -97,5 +96,5 @@ class FlagEmbeddingReranker(BaseNodePostprocessor):
             ]
             event.on_end(payload={EventPayload.NODES: new_nodes})
 
-        dispatch_event(ReRankEndEvent(nodes=new_nodes))
+        dispatcher.event(ReRankEndEvent(nodes=new_nodes))
         return new_nodes

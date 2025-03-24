@@ -2,7 +2,7 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 import httpx
 from llama_index.core.base.llms.types import ChatMessage
-from llama_index.core.bridge.pydantic import Field, PrivateAttr, root_validator
+from llama_index.core.bridge.pydantic import Field, PrivateAttr, model_validator
 from llama_index.core.callbacks import CallbackManager
 from llama_index.core.base.llms.generic_utils import get_from_param_or_env
 from llama_index.core.types import BaseOutputParser, PydanticProgramMode
@@ -11,6 +11,7 @@ from llama_index.llms.azure_openai.utils import (
     resolve_from_aliases,
 )
 from llama_index.llms.openai import OpenAI
+from llama_index.llms.openai.utils import DEFAULT_OPENAI_API_BASE
 from openai import AsyncAzureOpenAI
 from openai import AzureOpenAI as SyncAzureOpenAI
 from openai.lib.azure import AzureADTokenProvider
@@ -30,11 +31,13 @@ class AzureOpenAI(OpenAI):
         for your deployment when you deployed a model.
 
     You must have the following environment variables set:
+
     - `OPENAI_API_VERSION`: set this to `2023-07-01-preview` or newer.
         This may change in the future.
     - `AZURE_OPENAI_ENDPOINT`: your endpoint should look like the following
         https://YOUR_RESOURCE_NAME.openai.azure.com/
-    - `AZURE_OPENAI_API_KEY`: your API key if the api type is `azure`
+    - `AZURE_OPENAI_API_KEY`: your API key if the api type is `azure`| Or pass through `AZURE_AD_TOKEN_PROVIDER`
+        and set `use_azure_ad = True` to use managed identity with Azure Entra ID
 
     More information can be found here:
         https://learn.microsoft.com/en-us/azure/cognitive-services/openai/quickstart?tabs=command-line&pivots=programming-language-python
@@ -50,9 +53,30 @@ class AzureOpenAI(OpenAI):
         aoai_api_version = "2023-07-01-preview"
 
         llm = AzureOpenAI(
+            engine="AZURE_AZURE_OPENAI_DEPLOYMENT_NAME",
             model="YOUR_AZURE_OPENAI_COMPLETION_MODEL_NAME",
-            deployment_name="YOUR_AZURE_OPENAI_COMPLETION_DEPLOYMENT_NAME",
             api_key=aoai_api_key,
+            azure_endpoint=aoai_endpoint,
+            api_version=aoai_api_version,
+        )
+        ```
+
+        Using managed identity (passing a token provider instead of an API key):
+
+         ```python
+        from llama_index.llms.azure_openai import AzureOpenAI
+
+        aoai_endpoint = "YOUR_AZURE_OPENAI_ENDPOINT"
+        aoai_api_version = "2023-07-01-preview"
+
+        credential = DefaultAzureCredential()
+        token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+
+        llm = AzureOpenAI(
+            engine = llm_deployment
+            model="YOUR_AZURE_OPENAI_COMPLETION_MODEL_NAME",
+            azure_ad_token_provider=token_provider,
+            use_azure_ad=True,
             azure_endpoint=aoai_endpoint,
             api_version=aoai_api_version,
         )
@@ -69,9 +93,12 @@ class AzureOpenAI(OpenAI):
     use_azure_ad: bool = Field(
         description="Indicates if Microsoft Entra ID (former Azure AD) is used for token authentication"
     )
-
-    azure_ad_token_provider: AzureADTokenProvider = Field(
-        default=None, description="Callback function to provide Azure AD token."
+    azure_ad_token_provider: Optional[AzureADTokenProvider] = Field(
+        default=None, description="Callback function to provide Azure Entra ID token."
+    )
+    api_base: Optional[str] = Field(
+        default=None,
+        description="The Azure Base URL to use. Useful for proxies on top of Azure OpenAI.",
     )
 
     _azure_ad_token: Any = PrivateAttr(default=None)
@@ -90,6 +117,7 @@ class AzureOpenAI(OpenAI):
         reuse_client: bool = True,
         api_key: Optional[str] = None,
         api_version: Optional[str] = None,
+        api_base: Optional[str] = None,
         # azure specific
         azure_endpoint: Optional[str] = None,
         azure_deployment: Optional[str] = None,
@@ -118,9 +146,10 @@ class AzureOpenAI(OpenAI):
         if engine is None:
             raise ValueError("You must specify an `engine` parameter.")
 
-        azure_endpoint = get_from_param_or_env(
-            "azure_endpoint", azure_endpoint, "AZURE_OPENAI_ENDPOINT", ""
-        )
+        if api_base is None:
+            azure_endpoint = get_from_param_or_env(
+                "azure_endpoint", azure_endpoint, "AZURE_OPENAI_ENDPOINT", ""
+            )
 
         super().__init__(
             engine=engine,
@@ -134,6 +163,7 @@ class AzureOpenAI(OpenAI):
             api_key=api_key,
             azure_endpoint=azure_endpoint,
             azure_deployment=azure_deployment,
+            api_base=api_base,
             azure_ad_token_provider=azure_ad_token_provider,
             use_azure_ad=use_azure_ad,
             api_version=api_version,
@@ -148,7 +178,11 @@ class AzureOpenAI(OpenAI):
             **kwargs,
         )
 
-    @root_validator(pre=True)
+        # reset api_base to None if it is the default
+        if self.api_base == DEFAULT_OPENAI_API_BASE:
+            self.api_base = None
+
+    @model_validator(mode="before")
     def validate_env(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Validate necessary credentials are set."""
         if (
@@ -176,11 +210,11 @@ class AzureOpenAI(OpenAI):
 
     def _get_aclient(self) -> AsyncAzureOpenAI:
         if not self.reuse_client:
-            return AsyncAzureOpenAI(**self._get_credential_kwargs())
+            return AsyncAzureOpenAI(**self._get_credential_kwargs(is_async=True))
 
         if self._aclient is None:
             self._aclient = AsyncAzureOpenAI(
-                **self._get_credential_kwargs(),
+                **self._get_credential_kwargs(is_async=True),
             )
         return self._aclient
 
@@ -188,8 +222,13 @@ class AzureOpenAI(OpenAI):
         self, is_async: bool = False, **kwargs: Any
     ) -> Dict[str, Any]:
         if self.use_azure_ad:
-            self._azure_ad_token = refresh_openai_azuread_token(self._azure_ad_token)
-            self.api_key = self._azure_ad_token.token
+            if self.azure_ad_token_provider:
+                self.api_key = self.azure_ad_token_provider()
+            else:
+                self._azure_ad_token = refresh_openai_azuread_token(
+                    self._azure_ad_token
+                )
+                self.api_key = self._azure_ad_token.token
         else:
             import os
 
@@ -207,6 +246,7 @@ class AzureOpenAI(OpenAI):
             "timeout": self.timeout,
             "azure_endpoint": self.azure_endpoint,
             "azure_deployment": self.azure_deployment,
+            "base_url": self.api_base,
             "azure_ad_token_provider": self.azure_ad_token_provider,
             "api_version": self.api_version,
             "default_headers": self.default_headers,

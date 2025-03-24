@@ -42,15 +42,14 @@ class ColbertRerank(BaseNodePostprocessor):
         keep_retrieval_score: Optional[bool] = False,
     ):
         device = infer_torch_device() if device is None else device
-        self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
-        self._model = AutoModel.from_pretrained(model)
         super().__init__(
             top_n=top_n,
-            model=model,
-            tokenizer=tokenizer,
             device=device,
             keep_retrieval_score=keep_retrieval_score,
+            model=model,
         )
+        self._tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+        self._model = AutoModel.from_pretrained(model)
 
     @classmethod
     def class_name(cls) -> str:
@@ -85,8 +84,7 @@ class ColbertRerank(BaseNodePostprocessor):
         nodes: List[NodeWithScore],
         query_bundle: Optional[QueryBundle] = None,
     ) -> List[NodeWithScore]:
-        dispatch_event = dispatcher.get_dispatch_event()
-        dispatch_event(
+        dispatcher.event(
             ReRankStartEvent(
                 query=query_bundle, nodes=nodes, top_n=self.top_n, model_name=self.model
             )
@@ -126,5 +124,5 @@ class ColbertRerank(BaseNodePostprocessor):
             ]
             event.on_end(payload={EventPayload.NODES: reranked_nodes})
 
-        dispatch_event(ReRankEndEvent(nodes=reranked_nodes))
+        dispatcher.event(ReRankEndEvent(nodes=reranked_nodes))
         return reranked_nodes

@@ -22,14 +22,15 @@ After that, you can start using the tool:
 
 ```shell
 $ llamaindex-cli rag -h
-usage: llamaindex-cli rag [-h] [-q QUESTION] [-f FILES] [-c] [-v] [--clear] [--create-llama]
+usage: llamaindex-cli rag [-h] [-q QUESTION] [-f FILES [FILES ...]] [-c] [-v] [--clear] [--create-llama]
 
 options:
   -h, --help            show this help message and exit
   -q QUESTION, --question QUESTION
                         The question you want to ask.
-  -f FILES, --files FILES
-                        The name of the file or directory you want to ask a question about,such as "file.pdf".
+  -f, --files FILES [FILES ...]
+                        The name of the file(s) or directory you want to ask a question about,such
+                        as "file.pdf". Supports globs like "*.py".
   -c, --chat            If flag is present, opens a chat REPL.
   -v, --verbose         Whether to print out verbose information during execution.
   --clear               Clears out all currently embedded data.
@@ -86,7 +87,7 @@ Calling create-llama using data from /tmp/rag-data/...
 ...
 ```
 
-If you choose the option `Generate code, install dependencies, and run the app (~2 min)`, all dependencies will be installed and the app will run automatically. You can then access the application by going to this address: http://localhost:3000.
+If you choose the option `Generate code, install dependencies, and run the app (~2 min)`, all dependencies will be installed and the app will run automatically. You can then access the application by going to this address: <http://localhost:3000>.
 
 ### Supported File Types
 
@@ -100,7 +101,7 @@ See the next section for information on how to add your own custom file readers 
 
 ## Customization
 
-The `rag` CLI tool is highly customizable! The tool is powered by combining the [`IngestionPipeline`](../../module_guides/loading/ingestion_pipeline/index.md) & [`QueryPipeline`](../../module_guides/querying/pipeline/index.md) modules within the [`RagCLI`](https://github.com/run-llama/llama_index/blob/main/llama_index/command_line/rag.py) module.
+The `rag` CLI tool is highly customizable! The tool is powered by combining the [`IngestionPipeline`](../../module_guides/loading/ingestion_pipeline/index.md) & [`QueryPipeline`](../../module_guides/querying/pipeline/index.md) modules within the [`RagCLI`](https://github.com/run-llama/llama_index/blob/main/llama-index-cli/llama_index/cli/rag/base.py) module.
 
 To create your own custom rag CLI tool, you can simply create a script that instantiates the `RagCLI` class with a `IngestionPipeline` & `QueryPipeline` that you've configured yourself. From there, you can simply run `rag_cli_instance.cli()` in your script to run the same ingestion and Q&A commands against your own choice of embedding models, LLMs, vector DBs, etc.
 

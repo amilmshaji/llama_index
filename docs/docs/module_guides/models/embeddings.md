@@ -27,8 +27,14 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core import VectorStoreIndex
 from llama_index.core import Settings
 
-# global
+# changing the global default
 Settings.embed_model = OpenAIEmbedding()
+
+# local usage
+embedding = OpenAIEmbedding().get_text_embedding("hello world")
+embeddings = OpenAIEmbedding().get_text_embeddings(
+    ["hello world", "hello world"]
+)
 
 # per-index
 index = VectorStoreIndex.from_documents(documents, embed_model=embed_model)
@@ -167,9 +173,9 @@ class InstructorEmbeddings(BaseEmbedding):
         instruction: str = "Represent the Computer Science documentation or question:",
         **kwargs: Any,
     ) -> None:
+        super().__init__(**kwargs)
         self._model = INSTRUCTOR(instructor_model_name)
         self._instruction = instruction
-        super().__init__(**kwargs)
 
         def _get_query_embedding(self, query: str) -> List[float]:
             embeddings = self._model.encode([[self._instruction, query]])
@@ -225,6 +231,7 @@ We support integrations with OpenAI, Azure, and anything LangChain offers.
 - [Sagemaker](../../examples/embeddings/sagemaker_embedding_endpoint.ipynb)
 - [Text Embedding Inference](../../examples/embeddings/text_embedding_inference.ipynb)
 - [TogetherAI](../../examples/embeddings/together.ipynb)
+- [Upstage](../../examples/embeddings/upstage.ipynb)
 - [VoyageAI](../../examples/embeddings/voyageai.ipynb)
 - [Nomic](../../examples/embeddings/nomic.ipynb)
 - [Fireworks AI](../../examples/embeddings/fireworks.ipynb)

@@ -5,13 +5,13 @@ import logging
 import asyncio
 from typing import Any, List, Dict, Optional
 
+from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.schema import BaseNode, TextNode
-
 from llama_index.core.vector_stores.types import (
     MetadataFilters,
     FilterOperator,
     FilterCondition,
-    VectorStore,
+    BasePydanticVectorStore,
     VectorStoreQuery,
     VectorStoreQueryMode,
     VectorStoreQueryResult,
@@ -131,8 +131,9 @@ class AlibabaCloudOpenSearchConfig:
         self.embedding_field = embedding_field
         self.text_field = text_field
         self.search_config = search_config
+        self.output_fields = output_fields
 
-        if output_fields is None:
+        if self.output_fields is None:
             self.output_fields = (
                 list(self.field_mapping.values()) if self.field_mapping else []
             )
@@ -149,7 +150,7 @@ class AlibabaCloudOpenSearchConfig:
         return getattr(self, item)
 
 
-class AlibabaCloudOpenSearchStore(VectorStore):
+class AlibabaCloudOpenSearchStore(BasePydanticVectorStore):
     """The AlibabaCloud OpenSearch Vector Store.
 
     In this vector store we store the text, its embedding and its metadata
@@ -188,8 +189,13 @@ class AlibabaCloudOpenSearchStore(VectorStore):
     stores_text: bool = True
     flat_metadata: bool = True
 
+    _client: Any = PrivateAttr()
+    _config: AlibabaCloudOpenSearchConfig = PrivateAttr()
+
     def __init__(self, config: AlibabaCloudOpenSearchConfig) -> None:
         """Initialize params."""
+        super().__init__()
+
         self._config = config
         self._client = client.Client(
             models.Config(
@@ -199,6 +205,11 @@ class AlibabaCloudOpenSearchStore(VectorStore):
                 access_pass_word=config.password,
             )
         )
+
+    @classmethod
+    def class_name(cls) -> str:
+        """Class name."""
+        return "AlibabaCloudOpenSearchStore"
 
     @property
     def client(self) -> Any:

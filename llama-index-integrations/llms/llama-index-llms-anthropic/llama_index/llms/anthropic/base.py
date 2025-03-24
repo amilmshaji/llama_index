@@ -1,8 +1,6 @@
-import anthropic
 import json
-from anthropic.types import ContentBlockDeltaEvent, TextBlock
-from anthropic.types.beta.tools import ToolUseBlock
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -11,9 +9,14 @@ from typing import (
     Sequence,
     Tuple,
     Union,
-    TYPE_CHECKING,
 )
 
+from llama_index.core.base.llms.generic_utils import (
+    achat_to_completion_decorator,
+    astream_chat_to_completion_decorator,
+    chat_to_completion_decorator,
+    stream_chat_to_completion_decorator,
+)
 from llama_index.core.base.llms.types import (
     ChatMessage,
     ChatResponse,
@@ -32,24 +35,31 @@ from llama_index.core.llms.callbacks import (
     llm_chat_callback,
     llm_completion_callback,
 )
-from llama_index.core.base.llms.generic_utils import (
-    achat_to_completion_decorator,
-    astream_chat_to_completion_decorator,
-    chat_to_completion_decorator,
-    stream_chat_to_completion_decorator,
-)
 from llama_index.core.llms.function_calling import FunctionCallingLLM, ToolSelection
+from llama_index.core.llms.utils import parse_partial_json
 from llama_index.core.types import BaseOutputParser, PydanticProgramMode
+from llama_index.core.utils import Tokenizer
 from llama_index.llms.anthropic.utils import (
     anthropic_modelname_to_contextsize,
     force_single_tool_call,
     is_function_calling_model,
     messages_to_anthropic_messages,
 )
-from llama_index.core.utils import Tokenizer
+
+import anthropic
+from anthropic.types import (
+    ContentBlockDeltaEvent,
+    ContentBlockStartEvent,
+    ContentBlockStopEvent,
+    TextBlock,
+    TextDelta,
+    ThinkingBlock,
+    ThinkingDelta,
+    ToolUseBlock,
+    SignatureDelta,
+)
 
 if TYPE_CHECKING:
-    from llama_index.core.chat_engine.types import AgentChatResponse
     from llama_index.core.tools.types import BaseTool
 
 
@@ -57,8 +67,22 @@ DEFAULT_ANTHROPIC_MODEL = "claude-2.1"
 DEFAULT_ANTHROPIC_MAX_TOKENS = 512
 
 
+class AnthropicTokenizer:
+    def __init__(self, client, model) -> None:
+        self._client = client
+        self.model = model
+
+    def encode(self, text: str, *args: Any, **kwargs: Any) -> List[int]:
+        count = self._client.beta.messages.count_tokens(
+            messages=[{"role": "user", "content": text}],
+            model=self.model,
+        ).input_tokens
+        return [1] * count
+
+
 class Anthropic(FunctionCallingLLM):
-    """Anthropic LLM.
+    """
+    Anthropic LLM.
 
     Examples:
         `pip install llama-index-llms-anthropic`
@@ -79,8 +103,8 @@ class Anthropic(FunctionCallingLLM):
     temperature: float = Field(
         default=DEFAULT_TEMPERATURE,
         description="The temperature to use for sampling.",
-        gte=0.0,
-        lte=1.0,
+        ge=0.0,
+        le=1.0,
     )
     max_tokens: int = Field(
         default=DEFAULT_ANTHROPIC_MAX_TOKENS,
@@ -90,17 +114,38 @@ class Anthropic(FunctionCallingLLM):
 
     base_url: Optional[str] = Field(default=None, description="The base URL to use.")
     timeout: Optional[float] = Field(
-        default=None, description="The timeout to use in seconds.", gte=0
+        default=None, description="The timeout to use in seconds.", ge=0
     )
     max_retries: int = Field(
-        default=10, description="The maximum number of API retries.", gte=0
+        default=10, description="The maximum number of API retries.", ge=0
     )
     additional_kwargs: Dict[str, Any] = Field(
         default_factory=dict, description="Additional kwargs for the anthropic API."
     )
+    cache_idx: Optional[int] = Field(
+        default=None,
+        description=(
+            "Set the cache_control for every message up to and including this index. "
+            "Set to -1 to cache all messages. "
+            "Set to None to disable caching."
+        ),
+    )
+    thinking_dict: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Configure thinking controls for the LLM. See the Anthropic API docs for more details. "
+            "For example: thinking_dict={'type': 'enabled', 'budget_tokens': 16000}"
+        ),
+    )
 
-    _client: Any = PrivateAttr()
-    _aclient: Any = PrivateAttr()
+    _client: Union[
+        anthropic.Anthropic, anthropic.AnthropicVertex, anthropic.AnthropicBedrock
+    ] = PrivateAttr()
+    _aclient: Union[
+        anthropic.AsyncAnthropic,
+        anthropic.AsyncAnthropicVertex,
+        anthropic.AsyncAnthropicBedrock,
+    ] = PrivateAttr()
 
     def __init__(
         self,
@@ -119,24 +164,14 @@ class Anthropic(FunctionCallingLLM):
         completion_to_prompt: Optional[Callable[[str], str]] = None,
         pydantic_program_mode: PydanticProgramMode = PydanticProgramMode.DEFAULT,
         output_parser: Optional[BaseOutputParser] = None,
+        region: Optional[str] = None,
+        project_id: Optional[str] = None,
+        aws_region: Optional[str] = None,
+        cache_idx: Optional[int] = None,
+        thinking_dict: Optional[Dict[str, Any]] = None,
     ) -> None:
         additional_kwargs = additional_kwargs or {}
         callback_manager = callback_manager or CallbackManager([])
-
-        self._client = anthropic.Anthropic(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=default_headers,
-        )
-        self._aclient = anthropic.AsyncAnthropic(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=default_headers,
-        )
 
         super().__init__(
             temperature=temperature,
@@ -152,7 +187,49 @@ class Anthropic(FunctionCallingLLM):
             completion_to_prompt=completion_to_prompt,
             pydantic_program_mode=pydantic_program_mode,
             output_parser=output_parser,
+            cache_idx=cache_idx,
+            thinking_dict=thinking_dict,
         )
+
+        if region and project_id and not aws_region:
+            self._client = anthropic.AnthropicVertex(
+                region=region,
+                project_id=project_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                default_headers=default_headers,
+            )
+
+            self._aclient = anthropic.AsyncAnthropicVertex(
+                region=region,
+                project_id=project_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                default_headers=default_headers,
+            )
+        elif aws_region:
+            # Note: this assumes you have AWS credentials configured.
+            self._client = anthropic.AnthropicBedrock(
+                aws_region=aws_region,
+            )
+            self._aclient = anthropic.AsyncAnthropicBedrock(
+                aws_region=aws_region,
+            )
+        else:
+            self._client = anthropic.Anthropic(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+                default_headers=default_headers,
+            )
+            self._aclient = anthropic.AsyncAnthropic(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+                default_headers=default_headers,
+            )
 
     @classmethod
     def class_name(cls) -> str:
@@ -170,7 +247,7 @@ class Anthropic(FunctionCallingLLM):
 
     @property
     def tokenizer(self) -> Tokenizer:
-        return self._client.get_tokenizer()
+        return AnthropicTokenizer(self._client, self.model)
 
     @property
     def _model_kwargs(self) -> Dict[str, Any]:
@@ -185,43 +262,56 @@ class Anthropic(FunctionCallingLLM):
         }
 
     def _get_all_kwargs(self, **kwargs: Any) -> Dict[str, Any]:
-        return {
+        kwargs = {
             **self._model_kwargs,
             **kwargs,
         }
 
-    def _get_content_and_tool_calls(
+        if self.thinking_dict and "thinking" not in kwargs:
+            kwargs["thinking"] = self.thinking_dict
+
+        return kwargs
+
+    def _get_content_and_tool_calls_and_thinking(
         self, response: Any
-    ) -> Tuple[str, List[ToolUseBlock]]:
+    ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         tool_calls = []
+        thinking = None
         content = ""
         for content_block in response.content:
             if isinstance(content_block, TextBlock):
                 content += content_block.text
+            # this assumes a single thinking block, which as of 2025-03-06, is always true
+            elif isinstance(content_block, ThinkingBlock):
+                thinking = content_block.model_dump()
             elif isinstance(content_block, ToolUseBlock):
-                tool_calls.append(content_block.dict())
+                tool_calls.append(content_block.model_dump())
 
-        return content, tool_calls
+        return content, tool_calls, thinking
 
     @llm_chat_callback()
     def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
-        anthropic_messages, system_prompt = messages_to_anthropic_messages(messages)
+        anthropic_messages, system_prompt = messages_to_anthropic_messages(
+            messages, self.cache_idx
+        )
         all_kwargs = self._get_all_kwargs(**kwargs)
 
-        response = self._client.beta.tools.messages.create(
+        response = self._client.messages.create(
             messages=anthropic_messages,
             stream=False,
             system=system_prompt,
             **all_kwargs,
         )
 
-        content, tool_calls = self._get_content_and_tool_calls(response)
+        content, tool_calls, thinking = self._get_content_and_tool_calls_and_thinking(
+            response
+        )
 
         return ChatResponse(
             message=ChatMessage(
                 role=MessageRole.ASSISTANT,
                 content=content,
-                additional_kwargs={"tool_calls": tool_calls},
+                additional_kwargs={"tool_calls": tool_calls, "thinking": thinking},
             ),
             raw=dict(response),
         )
@@ -237,7 +327,9 @@ class Anthropic(FunctionCallingLLM):
     def stream_chat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponseGen:
-        anthropic_messages, system_prompt = messages_to_anthropic_messages(messages)
+        anthropic_messages, system_prompt = messages_to_anthropic_messages(
+            messages, self.cache_idx
+        )
         all_kwargs = self._get_all_kwargs(**kwargs)
 
         response = self._client.messages.create(
@@ -246,16 +338,70 @@ class Anthropic(FunctionCallingLLM):
 
         def gen() -> ChatResponseGen:
             content = ""
+            content_delta = ""
+            thinking = None
+            cur_tool_calls: List[ToolUseBlock] = []
+            cur_tool_call: Optional[ToolUseBlock] = None
+            cur_tool_json: str = ""
             role = MessageRole.ASSISTANT
             for r in response:
                 if isinstance(r, ContentBlockDeltaEvent):
-                    content_delta = r.delta.text
-                    content += content_delta
+                    if isinstance(r.delta, TextDelta):
+                        content_delta = r.delta.text
+                        content += content_delta
+                    elif isinstance(r.delta, SignatureDelta):
+                        if thinking is None:
+                            thinking = ThinkingBlock(
+                                signature=r.delta.signature,
+                                thinking="",
+                                type="thinking",
+                            )
+                        else:
+                            thinking.signature += r.delta.signature
+                    elif isinstance(r.delta, ThinkingDelta):
+                        if thinking is None:
+                            thinking = ThinkingBlock(
+                                signature="",
+                                thinking=r.delta.thinking,
+                                type="thinking",
+                            )
+                        else:
+                            thinking.thinking += r.delta.thinking
+                    else:
+                        if not isinstance(cur_tool_call, ToolUseBlock):
+                            raise ValueError("Tool call not started")
+                        content_delta = r.delta.partial_json
+                        cur_tool_json += content_delta
+                        try:
+                            argument_dict = parse_partial_json(cur_tool_json)
+                            cur_tool_call.input = argument_dict
+                        except ValueError:
+                            pass
+
+                    if cur_tool_call is not None:
+                        tool_calls_to_send = [*cur_tool_calls, cur_tool_call]
+                    else:
+                        tool_calls_to_send = cur_tool_calls
+
                     yield ChatResponse(
-                        message=ChatMessage(role=role, content=content),
+                        message=ChatMessage(
+                            role=role,
+                            content=content,
+                            additional_kwargs={
+                                "tool_calls": [t.dict() for t in tool_calls_to_send],
+                                "thinking": thinking.model_dump() if thinking else None,
+                            },
+                        ),
                         delta=content_delta,
                         raw=r,
                     )
+                elif isinstance(r, ContentBlockStartEvent):
+                    if isinstance(r.content_block, ToolUseBlock):
+                        cur_tool_call = r.content_block
+                        cur_tool_json = ""
+                elif isinstance(r, ContentBlockStopEvent):
+                    if isinstance(cur_tool_call, ToolUseBlock):
+                        cur_tool_calls.append(cur_tool_call)
 
         return gen()
 
@@ -270,23 +416,27 @@ class Anthropic(FunctionCallingLLM):
     async def achat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponse:
-        anthropic_messages, system_prompt = messages_to_anthropic_messages(messages)
+        anthropic_messages, system_prompt = messages_to_anthropic_messages(
+            messages, self.cache_idx
+        )
         all_kwargs = self._get_all_kwargs(**kwargs)
 
-        response = await self._aclient.beta.tools.messages.create(
+        response = await self._aclient.messages.create(
             messages=anthropic_messages,
             system=system_prompt,
             stream=False,
             **all_kwargs,
         )
 
-        content, tool_calls = self._get_content_and_tool_calls(response)
+        content, tool_calls, thinking = self._get_content_and_tool_calls_and_thinking(
+            response
+        )
 
         return ChatResponse(
             message=ChatMessage(
                 role=MessageRole.ASSISTANT,
                 content=content,
-                additional_kwargs={"tool_calls": tool_calls},
+                additional_kwargs={"tool_calls": tool_calls, "thinking": thinking},
             ),
             raw=dict(response),
         )
@@ -302,7 +452,9 @@ class Anthropic(FunctionCallingLLM):
     async def astream_chat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponseAsyncGen:
-        anthropic_messages, system_prompt = messages_to_anthropic_messages(messages)
+        anthropic_messages, system_prompt = messages_to_anthropic_messages(
+            messages, self.cache_idx
+        )
         all_kwargs = self._get_all_kwargs(**kwargs)
 
         response = await self._aclient.messages.create(
@@ -311,16 +463,69 @@ class Anthropic(FunctionCallingLLM):
 
         async def gen() -> ChatResponseAsyncGen:
             content = ""
+            content_delta = ""
+            thinking = None
+            cur_tool_calls: List[ToolUseBlock] = []
+            cur_tool_call: Optional[ToolUseBlock] = None
+            cur_tool_json: str = ""
             role = MessageRole.ASSISTANT
             async for r in response:
                 if isinstance(r, ContentBlockDeltaEvent):
-                    content_delta = r.delta.text
-                    content += content_delta
+                    if isinstance(r.delta, TextDelta):
+                        content_delta = r.delta.text
+                        content += content_delta
+                    elif isinstance(r.delta, SignatureDelta):
+                        if thinking is None:
+                            thinking = ThinkingBlock(
+                                signature=r.delta.signature,
+                                thinking="",
+                                type="thinking",
+                            )
+                        else:
+                            thinking.signature += r.delta.signature
+                    elif isinstance(r.delta, ThinkingDelta):
+                        if thinking is None:
+                            thinking = ThinkingBlock(
+                                signature="",
+                                thinking=r.delta.thinking,
+                                type="thinking",
+                            )
+                        else:
+                            thinking.thinking += r.delta.thinking
+                    else:
+                        if not isinstance(cur_tool_call, ToolUseBlock):
+                            raise ValueError("Tool call not started")
+                        content_delta = r.delta.partial_json
+                        cur_tool_json += content_delta
+                        try:
+                            argument_dict = parse_partial_json(cur_tool_json)
+                            cur_tool_call.input = argument_dict
+                        except ValueError:
+                            pass
+
+                    if cur_tool_call is not None:
+                        tool_calls_to_send = [*cur_tool_calls, cur_tool_call]
+                    else:
+                        tool_calls_to_send = cur_tool_calls
                     yield ChatResponse(
-                        message=ChatMessage(role=role, content=content),
+                        message=ChatMessage(
+                            role=role,
+                            content=content,
+                            additional_kwargs={
+                                "tool_calls": [t.dict() for t in tool_calls_to_send],
+                                "thinking": thinking.model_dump() if thinking else None,
+                            },
+                        ),
                         delta=content_delta,
                         raw=r,
                     )
+                elif isinstance(r, ContentBlockStartEvent):
+                    if isinstance(r.content_block, ToolUseBlock):
+                        cur_tool_call = r.content_block
+                        cur_tool_json = ""
+                elif isinstance(r, ContentBlockStopEvent):
+                    if isinstance(cur_tool_call, ToolUseBlock):
+                        cur_tool_calls.append(cur_tool_call)
 
         return gen()
 
@@ -331,7 +536,7 @@ class Anthropic(FunctionCallingLLM):
         astream_complete_fn = astream_chat_to_completion_decorator(self.astream_chat)
         return await astream_complete_fn(prompt, **kwargs)
 
-    def chat_with_tools(
+    def _prepare_chat_with_tools(
         self,
         tools: List["BaseTool"],
         user_msg: Optional[Union[str, ChatMessage]] = None,
@@ -339,8 +544,8 @@ class Anthropic(FunctionCallingLLM):
         verbose: bool = False,
         allow_parallel_tool_calls: bool = False,
         **kwargs: Any,
-    ) -> ChatResponse:
-        """Predict and call the tool."""
+    ) -> Dict[str, Any]:
+        """Prepare the chat with tools."""
         chat_history = chat_history or []
 
         if isinstance(user_msg, str):
@@ -348,58 +553,37 @@ class Anthropic(FunctionCallingLLM):
             chat_history.append(user_msg)
 
         tool_dicts = []
-        for tool in tools:
-            tool_dicts.append(
-                {
-                    "name": tool.metadata.name,
-                    "description": tool.metadata.description,
-                    "input_schema": tool.metadata.get_parameters_dict(),
-                }
-            )
+        if tools:
+            for tool in tools:
+                tool_dicts.append(
+                    {
+                        "name": tool.metadata.name,
+                        "description": tool.metadata.description,
+                        "input_schema": tool.metadata.get_parameters_dict(),
+                    }
+                )
+            if "prompt-caching" in kwargs.get("extra_headers", {}).get(
+                "anthropic-beta", ""
+            ):
+                tool_dicts[-1]["cache_control"] = {"type": "ephemeral"}
 
-        response = self.chat(chat_history, tools=tool_dicts, **kwargs)
+        return {"messages": chat_history, "tools": tool_dicts, **kwargs}
 
-        if not allow_parallel_tool_calls:
-            force_single_tool_call(response)
-
-        return response
-
-    async def achat_with_tools(
+    def _validate_chat_with_tools_response(
         self,
+        response: ChatResponse,
         tools: List["BaseTool"],
-        user_msg: Optional[Union[str, ChatMessage]] = None,
-        chat_history: Optional[List[ChatMessage]] = None,
-        verbose: bool = False,
         allow_parallel_tool_calls: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:
-        """Predict and call the tool."""
-        chat_history = chat_history or []
-
-        if isinstance(user_msg, str):
-            user_msg = ChatMessage(role=MessageRole.USER, content=user_msg)
-            chat_history.append(user_msg)
-
-        tool_dicts = []
-        for tool in tools:
-            tool_dicts.append(
-                {
-                    "name": tool.metadata.name,
-                    "description": tool.metadata.description,
-                    "input_schema": tool.metadata.get_parameters_dict(),
-                }
-            )
-
-        response = await self.achat(chat_history, tools=tool_dicts, **kwargs)
-
+        """Validate the response from chat_with_tools."""
         if not allow_parallel_tool_calls:
             force_single_tool_call(response)
-
         return response
 
     def get_tool_calls_from_response(
         self,
-        response: "AgentChatResponse",
+        response: "ChatResponse",
         error_on_no_tool_call: bool = True,
         **kwargs: Any,
     ) -> List[ToolSelection]:

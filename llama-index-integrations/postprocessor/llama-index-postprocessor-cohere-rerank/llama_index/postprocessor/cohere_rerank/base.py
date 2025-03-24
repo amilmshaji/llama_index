@@ -17,6 +17,7 @@ dispatcher = get_dispatcher(__name__)
 class CohereRerank(BaseNodePostprocessor):
     model: str = Field(description="Cohere model name.")
     top_n: int = Field(description="Top N nodes to return.")
+    base_url: Optional[str] = Field(description="Cohere base url.", default=None)
 
     _client: Any = PrivateAttr()
 
@@ -25,7 +26,9 @@ class CohereRerank(BaseNodePostprocessor):
         top_n: int = 2,
         model: str = "rerank-english-v2.0",
         api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
+        super().__init__(top_n=top_n, model=model)
         try:
             api_key = api_key or os.environ["COHERE_API_KEY"]
         except IndexError:
@@ -40,8 +43,7 @@ class CohereRerank(BaseNodePostprocessor):
                 "Cannot import cohere package, please `pip install cohere`."
             )
 
-        self._client = Client(api_key=api_key)
-        super().__init__(top_n=top_n, model=model)
+        self._client = Client(api_key=api_key, base_url=base_url)
 
     @classmethod
     def class_name(cls) -> str:
@@ -52,8 +54,7 @@ class CohereRerank(BaseNodePostprocessor):
         nodes: List[NodeWithScore],
         query_bundle: Optional[QueryBundle] = None,
     ) -> List[NodeWithScore]:
-        dispatch_event = dispatcher.get_dispatch_event()
-        dispatch_event(
+        dispatcher.event(
             ReRankStartEvent(
                 query=query_bundle, nodes=nodes, top_n=self.top_n, model_name=self.model
             )
@@ -92,5 +93,5 @@ class CohereRerank(BaseNodePostprocessor):
                 new_nodes.append(new_node_with_score)
             event.on_end(payload={EventPayload.NODES: new_nodes})
 
-        dispatch_event(ReRankEndEvent(nodes=new_nodes))
+        dispatcher.event(ReRankEndEvent(nodes=new_nodes))
         return new_nodes
